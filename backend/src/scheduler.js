@@ -118,25 +118,41 @@ class TimetableScheduler {
     this.rooms = rooms;
     this.electiveChoices = electiveChoices;
 
-    // schedule[day][slot] = SlotEntry | null
-    this.schedule = {};
+    // scheduleG1[day][slot] = SlotEntry | null
+    this.scheduleG1 = {};
+    this.scheduleG2 = {};
     for (const day of DAYS) {
-      this.schedule[day] = {};
+      this.scheduleG1[day] = {};
+      this.scheduleG2[day] = {};
       for (const slot of VALID_SLOTS) {
-        this.schedule[day][slot] = null;
+        this.scheduleG1[day][slot] = null;
+        this.scheduleG2[day][slot] = null;
       }
     }
 
     this.unscheduled = [];
     this.warnings = [];
 
-    // Teacher lookup map: courseCode → teacher
+    // Teacher lookup map: courseCode -> { L: teacher, T_G1, T_G2, P_G1, P_G2 }
     this._teacherMap = {};
     for (const t of teachers) {
       if (t.courseCode) {
         const codes = t.courseCode.split(',').map(c => c.trim());
         for (const code of codes) {
-          this._teacherMap[code] = t;
+          if (!this._teacherMap[code]) this._teacherMap[code] = {};
+          
+          if (t.componentType === 'L' || t.group === 'Combined') {
+            this._teacherMap[code].L = t;
+          } else if (t.componentType === 'T') {
+            this._teacherMap[code][`T_G${t.group === 'G1' ? '1' : '2'}`] = t;
+          } else if (t.componentType === 'P') {
+            this._teacherMap[code][`P_G${t.group === 'G1' ? '1' : '2'}`] = t;
+          } else {
+            // fallback for legacy
+            if (t.group === 'G1' || t.group === 'G2') {
+                this._teacherMap[code][`P_G${t.group === 'G1' ? '1' : '2'}`] = t;
+            }
+          }
         }
       }
     }
@@ -147,12 +163,17 @@ class TimetableScheduler {
     // Resolve elective choices into effective course list
     const effectiveCourses = this._resolveElectives();
 
-    // Sort by scheduling difficulty: LAB > THEORY_LAB > THEORY > PROJECT
-    const priority = { LAB: 0, THEORY_LAB: 1, THEORY: 2, TUTORIAL: 3, PROJECT: 99 };
-    effectiveCourses.sort((a, b) => (priority[a.subjectType] || 2) - (priority[b.subjectType] || 2));
+    // Sort by scheduling difficulty: ELECTIVES > LAB > THEORY_LAB > THEORY > PROJECT
+    const priority = { LAB: 1, THEORY_LAB: 2, THEORY: 3, TUTORIAL: 4, PROJECT: 99 };
+    effectiveCourses.sort((a, b) => {
+      // Prioritize electives first (0 priority)
+      const prioA = a.isElective ? 0 : (priority[a.subjectType] || 3);
+      const prioB = b.isElective ? 0 : (priority[b.subjectType] || 3);
+      return prioA - prioB;
+    });
 
     for (const course of effectiveCourses) {
-      const teacher = this._teacherMap[course.courseCode] || null;
+      const teacherMap = this._teacherMap[course.courseCode] || {};
 
       if (course.subjectType === 'PROJECT') {
         this.warnings.push({
@@ -165,22 +186,42 @@ class TimetableScheduler {
       }
 
       if (course.subjectType === 'LAB') {
-        this._scheduleLab(course, teacher);
+        this._scheduleLab(course, teacherMap.P_G1, 'G1');
+        this._scheduleLab(course, teacherMap.P_G2, 'G2');
 
       } else if (course.subjectType === 'THEORY_LAB') {
-        // Schedule theory part first, then lab part
-        this._scheduleTheory(course, teacher);
-        this._scheduleLab(course, teacher);
+        // Schedule theory (L) part for both groups combined
+        this._scheduleTheory(course, teacherMap.L, ['G1', 'G2']);
+        
+        // Schedule tutorials if any
+        if (course.T > 0) {
+          this._scheduleTutorial(course, teacherMap.T_G1, 'G1');
+          this._scheduleTutorial(course, teacherMap.T_G2, 'G2');
+        }
+
+        // Schedule labs for each group
+        this._scheduleLab(course, teacherMap.P_G1, 'G1');
+        this._scheduleLab(course, teacherMap.P_G2, 'G2');
 
       } else {
-        // THEORY or TUTORIAL
-        this._scheduleTheory(course, teacher);
+        // THEORY or TUTORIAL only
+        // Try theory component
+        if (course.theorySlotsPerWeek > 0 || course.L > 0) {
+            this._scheduleTheory(course, teacherMap.L, ['G1', 'G2']);
+        }
+        
+        // Try tutorial component
+        if (course.T > 0) {
+            this._scheduleTutorial(course, teacherMap.T_G1, 'G1');
+            this._scheduleTutorial(course, teacherMap.T_G2, 'G2');
+        }
       }
     }
 
     return {
       sectionKey: this.sectionKey,
-      schedule: this.schedule,
+      scheduleG1: this.scheduleG1,
+      scheduleG2: this.scheduleG2,
       unscheduled: this.unscheduled,
       warnings: this.warnings,
       grid: this._buildGrid(),
@@ -188,8 +229,8 @@ class TimetableScheduler {
   }
 
   // ── Schedule a THEORY subject ──────────────────────────────────────────────
-  _scheduleTheory(course, teacher) {
-    const slotsNeeded = course.theorySlotsPerWeek || (course.L + course.T) || course.L || 1;
+  _scheduleTheory(course, teacher, groups = ['G1', 'G2']) {
+    const slotsNeeded = course.theorySlotsPerWeek || course.L || 1;
     if (slotsNeeded === 0) return;
 
     let placed = 0;
@@ -219,7 +260,7 @@ class TimetableScheduler {
         }
 
         const entry = this._makeEntry(course, teacher, room, 'THEORY');
-        this._place(teacher, room, day, slot, entry);
+        this._place(teacher, room, day, slot, entry, groups);
         usedDays.add(day);
         placed++;
         break;
@@ -243,7 +284,7 @@ class TimetableScheduler {
           }
 
           const entry = this._makeEntry(course, teacher, room, 'THEORY');
-          this._place(teacher, room, day, slot, entry);
+          this._place(teacher, room, day, slot, entry, groups);
           placed++;
         }
       }
@@ -256,13 +297,85 @@ class TimetableScheduler {
         type: 'THEORY',
         needed: slotsNeeded,
         placed,
-        reason: `Only ${placed}/${slotsNeeded} theory slots placed (teacher or room conflict)`,
+        reason: `Only ${placed}/${slotsNeeded} theory slots placed (teacher or room conflict) for groups ${groups.join(',')}`,
+      });
+    }
+  }
+
+  // ── Schedule a TUTORIAL subject ────────────────────────────────────────────
+  _scheduleTutorial(course, teacher, group) {
+    const slotsNeeded = course.T || 1;
+    if (slotsNeeded === 0) return;
+
+    let placed = 0;
+    const usedDays = new Set();
+    const dayOrder = this._spreadDays(slotsNeeded, usedDays);
+    const fallbackDays = DAYS.filter(d => !dayOrder.includes(d));
+    const allDaysToTry = [...dayOrder, ...fallbackDays];
+
+    // Pass 1: Try placing 1 slot per day
+    for (const day of allDaysToTry) {
+        if (placed >= slotsNeeded) break;
+        if (usedDays.has(day)) continue;
+        
+        for (const slot of VALID_SLOTS) {
+            // we only test placing this group
+            if (!this._canPlace(teacher, null, day, slot, [group])) continue;
+            
+            const room = this._findRoom('THEORY', day, slot); // tutorials typically use theory/seminar rooms
+            if (!room) {
+                this.warnings.push({
+                    code: course.courseCode, title: course.courseTitle,
+                    reason: `No tutorial room on ${day} slot ${slot} for ${group} — unassigned`, type: 'WARN'
+                });
+            }
+
+            const entry = this._makeEntry(course, teacher, room, 'TUTORIAL');
+            entry.note = `(${group})`;
+            this._place(teacher, room, day, slot, entry, [group]);
+            usedDays.add(day);
+            placed++;
+            break;
+        }
+    }
+
+    // Pass 2: Multiple slots a day
+    if (placed < slotsNeeded) {
+        for (const day of DAYS) {
+            if (placed >= slotsNeeded) break;
+            for (const slot of VALID_SLOTS) {
+                if (placed >= slotsNeeded) break;
+                if (!this._canPlace(teacher, null, day, slot, [group])) continue;
+
+                const room = this._findRoom('THEORY', day, slot);
+                if (!room) {
+                  this.warnings.push({
+                    code: course.courseCode, title: course.courseTitle,
+                    reason: `No tutorial room on ${day} slot ${slot} for ${group} — unassigned`, type: 'WARN'
+                  });
+                }
+                const entry = this._makeEntry(course, teacher, room, 'TUTORIAL');
+                entry.note = `(${group})`;
+                this._place(teacher, room, day, slot, entry, [group]);
+                placed++;
+            }
+        }
+    }
+
+    if (placed < slotsNeeded) {
+      this.unscheduled.push({
+        courseCode: course.courseCode,
+        courseTitle: course.courseTitle,
+        type: `TUTORIAL_${group}`,
+        needed: slotsNeeded,
+        placed,
+        reason: `Only ${placed}/${slotsNeeded} tutorial slots placed (teacher or room conflict) for ${group}`,
       });
     }
   }
 
   // ── Schedule a LAB subject (2-consecutive slots) ───────────────────────────
-  _scheduleLab(course, teacher) {
+  _scheduleLab(course, teacher, group) {
     const blocksNeeded = course.labBlocksPerWeek || Math.max(1, Math.ceil((course.P || 2) / 2));
     if (blocksNeeded === 0) return;
 
@@ -277,24 +390,24 @@ class TimetableScheduler {
       for (const [slot1, slot2] of CONSECUTIVE_PAIRS) {
         if (placed >= blocksNeeded) break;
 
-        // Both slots must be free for section + teacher
-        if (!this._canPlace(teacher, null, day, slot1)) continue;
-        if (!this._canPlace(teacher, null, day, slot2)) continue;
+        // Both slots must be free for section + teacher (only testing this group)
+        if (!this._canPlace(teacher, null, day, slot1, [group])) continue;
+        if (!this._canPlace(teacher, null, day, slot2, [group])) continue;
 
         // Find lab room free for BOTH slots
         const room = this._findRoom('LAB', day, slot1, slot2);
         if (!room) {
           this.warnings.push({
             code: course.courseCode, title: course.courseTitle,
-            reason: `No lab room for 2-hr block on ${day} [${slot1}-${slot2}]`, type: 'WARN'
+            reason: `No lab room for 2-hr block on ${day} [${slot1}-${slot2}] for ${group}`, type: 'WARN'
           });
           continue;
         }
 
-        const entry1 = this._makeEntry(course, teacher, room, 'LAB', '(1/2)');
-        const entry2 = this._makeEntry(course, teacher, room, 'LAB', '(2/2)');
-        this._place(teacher, room, day, slot1, entry1);
-        this._place(teacher, room, day, slot2, entry2);
+        const entry1 = this._makeEntry(course, teacher, room, 'LAB', `(1/2) ${group}`);
+        const entry2 = this._makeEntry(course, teacher, room, 'LAB', `(2/2) ${group}`);
+        this._place(teacher, room, day, slot1, entry1, [group]);
+        this._place(teacher, room, day, slot2, entry2, [group]);
         usedDays.add(day);
         placed++;
         break;
@@ -308,16 +421,16 @@ class TimetableScheduler {
         for (const [slot1, slot2] of CONSECUTIVE_PAIRS) {
           if (placed >= blocksNeeded) break;
 
-          if (!this._canPlace(teacher, null, day, slot1)) continue;
-          if (!this._canPlace(teacher, null, day, slot2)) continue;
+          if (!this._canPlace(teacher, null, day, slot1, [group])) continue;
+          if (!this._canPlace(teacher, null, day, slot2, [group])) continue;
 
           const room = this._findRoom('LAB', day, slot1, slot2);
           if (!room) continue;
 
-          const entry1 = this._makeEntry(course, teacher, room, 'LAB', '(1/2)');
-          const entry2 = this._makeEntry(course, teacher, room, 'LAB', '(2/2)');
-          this._place(teacher, room, day, slot1, entry1);
-          this._place(teacher, room, day, slot2, entry2);
+          const entry1 = this._makeEntry(course, teacher, room, 'LAB', `(1/2) ${group}`);
+          const entry2 = this._makeEntry(course, teacher, room, 'LAB', `(2/2) ${group}`);
+          this._place(teacher, room, day, slot1, entry1, [group]);
+          this._place(teacher, room, day, slot2, entry2, [group]);
           placed++;
         }
       }
@@ -327,10 +440,10 @@ class TimetableScheduler {
       this.unscheduled.push({
         courseCode: course.courseCode,
         courseTitle: course.courseTitle,
-        type: 'LAB',
+        type: `LAB_${group}`,
         needed: blocksNeeded,
         placed,
-        reason: `Only ${placed}/${blocksNeeded} lab blocks placed (no free consecutive slots or lab room)`,
+        reason: `Only ${placed}/${blocksNeeded} lab blocks placed (no free consecutive slots or lab room) for ${group}`,
       });
     }
   }
@@ -374,8 +487,10 @@ class TimetableScheduler {
   }
 
   // ── Can this slot be placed? (section + teacher checks) ───────────────────
-  _canPlace(teacher, room, day, slot) {
-    if (!this.state.isSectionFree(this.sectionKey, day, slot)) return false;
+  _canPlace(teacher, room, day, slot, groups = ['G1', 'G2']) {
+    for (const group of groups) {
+      if (!this.state.isSectionFree(`${this.sectionKey}_${group}`, day, slot)) return false;
+    }
     if (teacher && !this.state.isTeacherFree(teacher.id, day, slot)) return false;
     if (room && !this.state.isRoomFree(room.id, day, slot)) return false;
     return true;
@@ -401,9 +516,13 @@ class TimetableScheduler {
   }
 
   // ── Place entry into schedule and mark busy ───────────────────────────────
-  _place(teacher, room, day, slot, entry) {
-    this.schedule[day][slot] = entry;
-    this.state.markSection(this.sectionKey, day, slot, entry.courseCode);
+  _place(teacher, room, day, slot, entry, groups = ['G1', 'G2']) {
+    for (const group of groups) {
+      if (group === 'G1') this.scheduleG1[day][slot] = entry;
+      if (group === 'G2') this.scheduleG2[day][slot] = entry;
+      this.state.markSection(`${this.sectionKey}_${group}`, day, slot, entry.courseCode);
+    }
+    
     if (teacher) this.state.markTeacher(teacher.id, day, slot, this.sectionKey);
     if (room) this.state.markRoom(room.id, day, slot, this.sectionKey);
   }
@@ -433,7 +552,8 @@ class TimetableScheduler {
         isLunch: slotInfo.isLunch,
       };
       for (const day of DAYS) {
-        row[day] = slotInfo.isLunch ? 'LUNCH' : (this.schedule[day][slotInfo.index] || null);
+        row[day] = slotInfo.isLunch ? 'LUNCH' : 
+            (this.scheduleG1[day][slotInfo.index] || this.scheduleG2[day][slotInfo.index] || null);
       }
       return row;
     });
@@ -486,14 +606,16 @@ class TimetableScheduler {
 /**
  * Validates a completed timetable for clashes.
  */
-function validateSchedule(schedule, sectionKey) {
+function validateSchedule(scheduleG1, scheduleG2, sectionKey) {
   const clashes = [];
 
   for (const day of DAYS) {
     for (const slot of VALID_SLOTS) {
-      const entry = schedule[day]?.[slot];
-      if (entry && Array.isArray(entry)) {
-        clashes.push({ day, slot, reason: 'Multiple entries in same slot', entries: entry });
+      if (scheduleG1?.[day]?.[slot] && Array.isArray(scheduleG1[day][slot])) {
+        clashes.push({ day, slot, reason: 'Multiple entries in same slot (G1)', entries: scheduleG1[day][slot] });
+      }
+      if (scheduleG2?.[day]?.[slot] && Array.isArray(scheduleG2[day][slot])) {
+        clashes.push({ day, slot, reason: 'Multiple entries in same slot (G2)', entries: scheduleG2[day][slot] });
       }
     }
   }
@@ -504,17 +626,20 @@ function validateSchedule(schedule, sectionKey) {
 /**
  * Summarizes a schedule: total theory hours, lab hours, free slots per day.
  */
-function summarizeSchedule(schedule) {
+function summarizeSchedule(scheduleG1, scheduleG2) {
   let theoryCount = 0, labCount = 0, freeCount = 0;
   const dayLoads = {};
 
   for (const day of DAYS) {
     dayLoads[day] = 0;
     for (const slot of VALID_SLOTS) {
-      const entry = schedule[day]?.[slot];
-      if (!entry) { freeCount++; continue; }
-      if (entry.sessionType === 'THEORY') theoryCount++;
-      if (entry.sessionType === 'LAB') labCount++;
+      const eG1 = scheduleG1?.[day]?.[slot];
+      const eG2 = scheduleG2?.[day]?.[slot];
+      
+      if (!eG1 && !eG2) { freeCount++; continue; }
+      if (eG1?.sessionType === 'THEORY' || eG2?.sessionType === 'THEORY') theoryCount++;
+      if (eG1?.sessionType === 'LAB' || eG2?.sessionType === 'LAB') labCount++;
+      if (eG1?.sessionType === 'TUTORIAL' || eG2?.sessionType === 'TUTORIAL') theoryCount++;
       dayLoads[day]++;
     }
   }

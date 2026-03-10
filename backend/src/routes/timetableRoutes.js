@@ -264,26 +264,13 @@ router.post('/generate', async (req, res) => {
     const result = new TimetableScheduler(state, section, allCourses, teachers, rooms, electiveChoices || {}).generate();
 
     console.log('[Generate] Result:', {
-      scheduled: Object.values(result.schedule).flatMap(day => Object.values(day)).filter(Boolean).length,
       unscheduled: result.unscheduled.length,
       warnings: result.warnings.length
     });
 
     // Split schedule into G1 and G2 (both groups get the same schedule for now)
-    const scheduleG1 = {};
-    const scheduleG2 = {};
-
-    for (const day of DAYS) {
-      scheduleG1[day] = {};
-      scheduleG2[day] = {};
-      for (const slot of ALL_SLOTS) {
-        const entry = result.schedule[day]?.[slot.index];
-        if (entry) {
-          scheduleG1[day][slot.index] = entry;
-          scheduleG2[day][slot.index] = entry;
-        }
-      }
-    }
+    const scheduleG1 = result.scheduleG1;
+    const scheduleG2 = result.scheduleG2;
 
     // ── AUTO-SAVE TO FIREBASE (Admin SDK syntax) ──
     try {
@@ -293,7 +280,6 @@ router.post('/generate', async (req, res) => {
       const timetableData = {
         sectionKey: result.sectionKey,
         programName: prog.programName,
-        schedule: result.schedule,
         scheduleG1,
         scheduleG2,
         grid: result.grid,
@@ -318,13 +304,12 @@ router.post('/generate', async (req, res) => {
       sectionKey: result.sectionKey,
       programName: prog.programName,
       grid: result.grid,
-      schedule: result.schedule,
       scheduleG1,
       scheduleG2,
       unscheduled: result.unscheduled,
       warnings: result.warnings,
-      validation: validateSchedule(result.schedule, section),
-      summary: summarizeSchedule(result.schedule),
+      validation: validateSchedule(scheduleG1, scheduleG2, section),
+      summary: summarizeSchedule(scheduleG1, scheduleG2),
       updatedState: { teacherBusy: state.teacherBusy, roomBusy: state.roomBusy, sectionBusy: state.sectionBusy },
       meta: { program, programName: prog.programName, year: Number(year), section, semester: yd.semester, days: DAYS, slots: ALL_SLOTS },
     });

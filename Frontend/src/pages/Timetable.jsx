@@ -65,6 +65,7 @@ export default function Timetable() {
   const [selectedTimetableIndex, setSelectedTimetableIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // ── Auto-load existing timetable if it exists ──
   useEffect(() => {
@@ -164,35 +165,59 @@ export default function Timetable() {
         const expandedTeachers = [];
         uniqueCodes.forEach(code => {
           const c = allCourses.find(x => x.courseCode === code);
-          const hasLab = c?.labHours > 0 || c?.P > 0;
-          const hasTheory = c?.theoryHours > 0 || c?.L > 0 || c?.T > 0;
+          const hasL = c?.L > 0 || c?.theoryHours > 0;
+          const hasT = c?.T > 0;
+          const hasP = c?.P > 0 || c?.labHours > 0;
 
-          if (hasTheory) {
+          if (hasL) {
             expandedTeachers.push({
-              id: `t_${code}_combined`,
+              id: `t_${code}_L`,
               name: '',
               courseCode: code,
               courseTitle: c?.courseTitle || '',
               group: 'Combined',
-              label: 'Theory / Combined'
+              label: 'Lecture (Combined)',
+              componentType: 'L'
             });
           }
-          if (hasLab) {
+          if (hasT) {
             expandedTeachers.push({
-              id: `t_${code}_g1`,
+              id: `t_${code}_T_g1`,
               name: '',
               courseCode: code,
               courseTitle: c?.courseTitle || '',
               group: 'G1',
-              label: 'Lab (Group 1)'
+              label: 'Tutorial (Group 1)',
+              componentType: 'T'
             });
             expandedTeachers.push({
-              id: `t_${code}_g2`,
+              id: `t_${code}_T_g2`,
               name: '',
               courseCode: code,
               courseTitle: c?.courseTitle || '',
               group: 'G2',
-              label: 'Lab (Group 2)'
+              label: 'Tutorial (Group 2)',
+              componentType: 'T'
+            });
+          }
+          if (hasP) {
+            expandedTeachers.push({
+              id: `t_${code}_P_g1`,
+              name: '',
+              courseCode: code,
+              courseTitle: c?.courseTitle || '',
+              group: 'G1',
+              label: 'Lab/Practical (Group 1)',
+              componentType: 'P'
+            });
+            expandedTeachers.push({
+              id: `t_${code}_P_g2`,
+              name: '',
+              courseCode: code,
+              courseTitle: c?.courseTitle || '',
+              group: 'G2',
+              label: 'Lab/Practical (Group 2)',
+              componentType: 'P'
             });
           }
         });
@@ -256,6 +281,7 @@ export default function Timetable() {
               name: teacherData.name,
               courseCode: t.courseCode,
               group: t.group,
+              componentType: t.componentType,
               maxHrsPerWeek: 40
             };
           }).filter(Boolean);
@@ -643,11 +669,48 @@ export default function Timetable() {
             <button onClick={() => setStep(3)} className="mb-6 flex items-center gap-2 text-blue-600 hover:underline"><ArrowLeft size={16} /> Back</button>
             <h2 className="text-xl font-bold mb-2">Choose Subjects</h2>
             <p className="text-gray-500 mb-6 text-sm">Select the subjects you want to include in the generated timetables.</p>
+            
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+              <div className="w-full md:w-1/2">
+                <input
+                  type="text"
+                  placeholder="Search by course code or title..."
+                  value={searchQuery || ''}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full border-2 border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-4 py-2 focus:border-blue-600 outline-none text-sm"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    const allCodes = teachers.map(t => t.courseCode).filter((v, i, a) => a.indexOf(v) === i);
+                    setSelectedSubjects(allCodes);
+                  }}
+                  className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 text-sm font-bold rounded-lg border border-blue-200 dark:border-blue-800 hover:bg-blue-100 transition-colors"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => setSelectedSubjects([])}
+                  className="px-4 py-2 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-sm font-bold rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-100 transition-colors"
+                >
+                  Unselect All
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
               {teachers.reduce((acc, t) => {
                 if (!acc.includes(t.courseCode)) acc.push(t.courseCode);
                 return acc;
-              }, []).map((code) => {
+              }, [])
+              .filter(code => {
+                if (!searchQuery) return true;
+                const info = teachers.find(t => t.courseCode === code);
+                const q = searchQuery.toLowerCase();
+                return code.toLowerCase().includes(q) || (info?.courseTitle?.toLowerCase() || '').includes(q);
+              })
+              .map((code) => {
                 const courseInfo = teachers.find(t => t.courseCode === code);
                 return (
                   <label key={code} className={`flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${selectedSubjects.includes(code) ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50'}`}>
