@@ -29,7 +29,7 @@ An advanced, constraint-based timetable scheduling application built with React 
 - **State Management**: React Hooks (useState, useEffect)
 
 ### Backend & Database
-- **Cloud Functions**: [Firebase Cloud Functions](https://firebase.google.com/docs/functions) (Node.js 18) for server-side scheduling logic.
+- **Server**: Node.js with Express for handling API requests and server-side scheduling logic.
 - **Database**: [Firebase Realtime Database](https://firebase.google.com/docs/database) for storing institution data and generated timetables.
 
 ## 📋 System Constraints & Rules
@@ -63,10 +63,12 @@ TimeTable/
 │   │   └── ...
 │   ├── public/             # Static assets
 │   └── ...
-├── functions/              # Firebase Cloud Functions
-│   ├── index.js            # Entry point
-│   ├── scheduler.js        # Server-side scheduling logic
-│   └── ...
+├── backend/                # Node.js/Express Server
+│   ├── src/
+│   │   ├── server.js       # Entry point
+│   │   ├── scheduler.js    # Server-side scheduling logic
+│   │   └── ...
+│   └── package.json        # Backend dependencies
 ├── firebase.json           # Firebase configuration
 └── database.rules.json     # Database security rules
 ```
@@ -97,16 +99,16 @@ TimeTable/
    ```
    The application will be available at `http://localhost:5173`.
 
-### Backend Setup (Firebase)
-To deploy or run the cloud functions:
-1. Navigate to `functions/`:
+### Backend Setup
+To run the server locally:
+1. Navigate to `backend/`:
    ```bash
-   cd functions
+   cd backend
    npm install
    ```
-2. Deploy to Firebase (requires Firebase CLI):
+2. Start the development server:
    ```bash
-   firebase deploy --only functions
+   npm run dev
    ```
 
 ## 🧪 Testing
